@@ -1,0 +1,1452 @@
+---
+title: "Project: RNA-seq and ATAC-seq analysis of structural data"
+author: "Gianfranco Botta, Guido Putignano, Eric Reber"
+date: today
+format: 
+    html:
+      toc: true
+      self-contained: true
+      highlight-style: github
+      code-line-numbers: true
+editor_options: 
+    chunk_output_type: console
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+library("dplyr")
+library("biomaRt")
+library("ggplot2")
+library("gridExtra")
+library("pbapply")
+library("tibble")
+library("ggrepel")
+library("DESeq2")
+library("tximport")
+library("edgeR")
+library("tidyverse")
+library("gplots")
+library("viridis")
+library("pheatmap")
+library("dendextend")
+library("tidyverse")
+library("sva")
+
+library("Rsamtools")
+library("Rsubread")
+library("magrittr")  
+library("GenomicAlignments")  
+library("soGGi")
+library("GenomicFeatures")  
+library("TxDb.Mmusculus.UCSC.mm39.refGene")
+library("DiffBind")
+library("ATACseqQC")
+library("TxDb.Mmusculus.UCSC.mm10.knownGene")
+library("stringr")
+library("biomaRt")
+library("ChIPQC")
+library("rtracklayer") 
+library("DT")
+library("tidyr")
+library("data.table")
+library("ChIPpeakAnno")
+library("ChIPseeker")
+library("UpSetR")
+library("ggupset")
+library("tools")
+library("rGREAT")
+```
+
+# Introduction
+
+Our immune system, comprising both specific and unspecific cells, plays a crucial role in protecting organisms from pathogens. However, recent discoveries suggest that the scope of pathogen defense extends beyond the traditional immune system, with structural cells contributing significantly. This project aims to elucidate a novel aspect of pathogen defense mechanisms provided by structural cells. The initial section provides an extensive overview of our methodologies and findings, referencing pivotal studies that laid the groundwork for our research. We critically analyze the strengths of our approach, highlighting potential areas for further improvement and exploration. In the second section, we delve into an organ-based analysis utilizing cutting-edge techniques such as RNA sequencing (RNAseq) and Assay for Transposase-Accessible Chromatin sequencing (ATACseq). This detailed examination sheds light on the unique roles and regulatory mechanisms of structural cells in various organs. The third section is dedicated to comparing the effectiveness and insights gained from each analytical tool, specifically focusing on their utility in organ-based research. This comparative analysis enhances our understanding of the intricate interactions within structural cells across different organs. Our project's goal transcends mere replication of existing analyses. By juxtaposing our findings with those of previous authors, we aim to validate and build upon their results. This approach not only corroborates the existing data but also enriches the interpretation, offering a more profound and nuanced understanding of structural cells' role in pathogen defense.
+
+Immune cells can be broadly classified into two categories: Innate Immunity and Adaptive Immunity. Each category comprises various cell types with distinct roles in the immune response. However, even though these cell types such as T-cells, B-cells, Dendritic cells and Granulocytes have a fundamental importance in the defence of the organism, recent research has found structural cells to play an imporant role in the response to infection and inflammation [@minton2020] [@krausgruber2020] [@tuong2020] [@gomes2020]. Specifically, our cells of interest include epithelial cells, endothelial cells and fibroblasts.
+
+| Cell Type         | Location                                           | Function and Role in Pathogen Defense                                                                                         |
+|------------------|----------------------|--------------------------------|
+| Epithelial Cells  | Present on organ surfaces                          | Provide more than just support; involved in responses to infection either directly or through interactions with immune cells. |
+| Fibroblasts       | Part of the connective tissue                      | Help maintain the extracellular matrix material surrounding cells.                                                            |
+| Endothelial Cells | Line the interior of vessels (e.g., blood vessels) | Involved in responses to infection either directly or through interactions with immune cells, alongside epithelial cells.     |
+
+The main area of research in this case, mainly focuses on describing how structural cells can have an impact on the protection of the organism through the interaction with cells from the immune system. The major takeaways include:
+
+1.  **Unrealized Potential in Promoter Accessibility:** The study identifies open, accessible promoters with low levels of expression, termed as 'unrealized potential.' This suggests these genes are likely poised for a rapid response upon infection, indicating a pre-emptive genetic mechanism in anticipation of pathogenic challenges.
+
+2.  **Similarity Across Structural Cells within the Same Organ:** A significant observation is that different structural cell types within the same organ exhibit more similarities with each other than the same cell type does across different organs. This finding underscores the influence of the organ-specific microenvironment on cellular behavior and genetic expression.
+
+3.  **Distinct Genetic Responses to LCMV and Cytokines:** The research highlights that the genetic reaction of structural cells varies significantly between Lymphocytic Choriomeningitis Virus (LCMV) infection and cytokine stimulation. This differential response opens avenues for potential new combination therapies, tailored to specific pathogens and inflammatory stimuli.
+
+Our analysis will mainly focus on the first two points, using RNA-seq and ATAC-seq pipelines as our main tool for investigation. We will use RNA-seq to quantify gene expression levels, and use ATAC-seq to assess the chromatin accessibility.
+
+# Data
+
+## The data
+
+We are working with bulk RNA-seq data and bulk ATAC-seq data from the paper "Structural cells are key regulators of organ-specific immune responses" by Krausgruber et al. The paper focuses on identifying unrealized epigenetic potentials in structural cells across different organs in mice (mus musculus). We are working with a subset of the data, namely the structural cells of 8 organs; the brain, heart, lung, liver, spleen, kidney, large intestine and small intestine. There are 3 types of structural cells investigated in the paper which we will work with, namely endothelial, epithelial and fibroblast cells.
+
+The RNA-seq data is obtained from 3 different replicates of C57BL/6J mice, whilst the ATAC-seq data was obtained from 2 different replicates. Both the RNA-seq data and the ATAC-seq data were obtained using Illumina single-end sequencing.
+
+## Preprocessing
+
+We obtain our RNA-seq and ATAC-seq data from SRA by running the accession list through the fasterq-dump tool.
+
+```         
+cat SRR_Acc_List.txt | xargs fasterq-dump --threads 8 --progress
+```
+
+We use FastQC in order to obtain our quality control results both for our RNA-seq data and our ATAC-seq data.
+
+### RNA-seq Quality Control
+
+![Inital RNA QC](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/rna_init.png)
+
+For our RNA-seq data we obtain failing grades for per base sequence content and per sequence GC content, which are commonly ignored. Just like in ATAC-seq, we receive warnings for sequence duplication warnings, however, for RNA-seq data this is section can be ignored. FastQC will yield these errors for our data as it was originally intended to use whole genome data #fact check
+
+As for the overrepresented sequences, a trimming is often applied if there are also many samples that fail in adapter content. Unlike our ATAC-seq quality control, this is not the case here. For the few samples for where there are failing grades, we will rely on using soft trimming during the mapping step using STAR. Thus, we continue with the data as-is into our mapping.
+
+### ATAC-seq Quality Control
+
+![Initial ATAC](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/atac_init_qc.png)
+
+We obtain warnings and failing grades for adapter content for our endothelial and epithelial data, along with failing grades for sequence duplication levels. In the quality control reports for adapter content there is a presence the Nextera transposase sequences, which are commonly used in ATAC-seq data obtained from Illumina. In order to remove the adapter content, we use fastp to trim the sequences for the adapter. As we want to trim the Nextera transposase sequences, we specify that we wish to trim CTGTCTCTTATACACATCT. In order to address the sequence duplication levels present in the different, we wish to perform a deduplication step. We use fastp for both our trimming and our deduplication.
+
+```         
+fastp --dedup --adapter_sequence CTGTCTCTTATACACATCT -l 25 -i $file -o trimmed_dedup/$file
+```
+
+After performing the deduplication and trimming steps, we rerun FastQC and obtain our new quality control results.
+
+![Deduptrim Quality Control](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/atac_deduptrim.png)
+
+We see that the deduplication and trimming steps fix our failing grades for adapter content, successfully removing the Nextera adapters. The sequence deduplication levels now also receive passing grades, indicating a successfull deduplication. We are still left with warnings for the sequence length distribution and per base sequence content, however these are commonly obtained warnings and are often ignored if the other sections are fine.
+
+## Mapping
+
+The mapping is done with STAR for RNA-seq and with Bowtie2 for ATAC-seq. We will use the GRCm39 mouse genome from the UCSC Genome Browser as our reference genome, for which we will build an index.
+
+For mapping ATAC-seq data with Bowtie2, we use the following settings in our bash script:
+
+```         
+bowtie2 --very-sensitive \
+        -p 16 \
+        -X 2000 \
+        -x genome/indexed_m39_genome \
+        -U rawdata/${id}*.fastq.gz \
+        -S genome/${id}.sam
+```
+
+We then use Samtools in order to convert the .sam files to .bam files.
+
+```         
+for f in *.sam
+do
+    samtools view -Sb $f > $f.bam
+done
+```
+
+For our RNA-seq data, we use the following settings for STAR:
+
+```         
+STAR --genomeDir genome/star-index \
+         --runThreadN 10 \
+         --readFilesIn ${id}.fastq.gz \
+         --readFilesCommand zcat \
+         --sjdbGTFfile genome/gencode.vM33.annotation.gtf \
+         --quantMode TranscriptomeSAM \
+         --outSAMtype BAM SortedByCoordinate \
+         --outFileNamePrefix mapping_transcriptome/$id/
+```
+
+After having completed mapping we will look at the quality of the mapping for our ATAC-seq and RNA-seq data.
+
+![Mapping QC](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/rna_mapping.png) 
+
+For our endothelial RNA data, we see a large variety in the amount of uniquely mapped reads, the amount of reads to multiple loci and unmapped reads. We have some outliers with very poor unique mapping percentages, with SRR11256465 having a below 10% mapping rate, and with SRR11256377 and SRR11256377 having a unique mapping percentage of below 20%.
+
+Note that not all mapping percentages add up to 100%, as STAR also reports statistics such as "% of reads mapped to too many loci" and "% unmapped reads: other" which usually make up \<2% of the mapping percentage which we have chosen not to include in our figure.
+
+For the endothelial RNA data, the result is similar to our endothelium data in that the results are quite varied. We can again identify outliers; SRR11256459 and SRR11256560 are have unique mapping percentages around the 10% mark, with SRR11256442 and SRR11256458 having unique mapping percentages around 25%.
+
+For the samples with unique mapping percentages around 10%; SRR11256459 and SRR11256460, the number of uniquely mapped reads is 1198017 and 1998939 respectively.
+
+Again, for the fibroblast RNA data we observe that the mapping rates for uniquely mapped, unmapped and reads mapped to multiple loci is varying across samples. For fibroblast data, SRR11256383, SRR11256384 and SRR11256401 have \~10% uniquely mapping reads. We will continue with the samples that have a lower mapping rate in the differential expression analysis, however, we will keep an eye on these samples in case outliers in the differential expression analysis correlate to poorly mapped samples.
+
+Before moving on to our RNA-seq analysis, we use RSEM in order to obtain normalized gene counts, which we will use as our input for the RNA-seq analysis.
+
+```         
+rsem-calculate-expression --alignments \
+                          -p 10 \
+                          mapping_transcriptome/$id/Aligned.toTranscriptome.out.bam \
+                          genome/rsem_grcm39_genecode33/rsem_grcm39_genecode33 \
+                          rsem/$id/$id
+```
+
+# RNA-seq analysis
+
+```{r, echo=FALSE}
+samples <- list.files("C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/rsem_output")
+
+expr <- sapply(samples, function(sample){
+  file <- paste0("rsem_output/",sample,"/",sample,".genes.results")
+  quant <- read.csv(file, sep="\t", header=T)
+  tpm <- setNames(quant$TPM, quant$gene_id)
+  return(tpm)
+})
+
+raw_meta_endo <- read.csv("SraRunTable_endo.txt", header=T) 
+meta_endo <- raw_meta_endo %>%
+        dplyr::select(c("Run","Organism","Age","SampleName","Organ","Replicate","cell_type"))
+meta_endo$Replicate <- paste(meta_endo$Replicate)
+
+raw_meta_epi <- read.csv("SraRunTable_epi.txt", header=T) 
+meta_epi <- raw_meta_epi %>%
+        dplyr::select(c("Run","Organism","Age","SampleName","Organ","Replicate","cell_type"))
+meta_epi$Replicate <- paste(meta_epi$Replicate)
+
+raw_meta_fibro <- read.csv("SraRunTable_fibro.txt", header=T) 
+meta_fibro <- raw_meta_fibro %>%
+        dplyr::select(c("Run","Organism","Age","SampleName","Organ","Replicate","cell_type"))
+meta_fibro$Replicate <- paste(meta_fibro$Replicate)
+
+expr_endo <- expr[,meta_endo$Run]
+expr_epi <- expr[,meta_epi$Run]
+expr_fibro <- expr[,meta_fibro$Run]
+
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "mmusculus_gene_ensembl")
+meta_genes <- getBM(attributes = c("ensembl_gene_id",
+                                   "ensembl_gene_id_version",
+                                   "mgi_symbol",
+                                   "description",
+                                   "chromosome_name",
+                                   "start_position",
+                                   "end_position",
+                                   "strand"),
+                    filters = "ensembl_gene_id_version",
+                    values = rownames(expr_endo),
+                    mart = ensembl) %>%
+  mutate(ensembl_gene_id_version = as.character(ensembl_gene_id_version)) %>%
+  right_join(data.frame(ensembl_gene_id_version = rownames(expr_endo)),
+             by = "ensembl_gene_id_version") %>%
+  distinct(ensembl_gene_id_version, .keep_all = TRUE)
+
+expr_endo <- expr_endo[meta_genes$ensembl_gene_id_version,]
+expr_epi <- expr_epi[meta_genes$ensembl_gene_id_version,]
+expr_fibro <- expr_fibro[meta_genes$ensembl_gene_id_version,]
+```
+
+We load in the RSEM data and retrieve additional metadata such as the ensembl_gene_id and mgi_symbol from Ensembl.
+
+## Exploratory analysis
+
+```{r}
+dim(expr_endo)
+dim(expr_epi)
+dim(expr_fibro)
+```
+
+We have 56884 annotated genes and 24 samples for each of our three types of structural cells.
+
+To focus on the specific genes we're interested in, we can examine the average expression level of these genes in each sample in our dataset.
+
+```{r, echo=FALSE}
+avg_expr_endo <- data.frame(Average = rowMeans(expr_endo))
+avg_expr_epi <- data.frame(Average = rowMeans(expr_epi))
+avg_expr_fibro <- data.frame(Average = rowMeans(expr_fibro))
+
+# endothelial cells
+hist_endo <- ggplot(avg_expr_endo, aes(x=Average)) +
+  geom_histogram(fill ="lightblue", bins = 50) +
+  scale_x_continuous(breaks = c(0,1,10,100,1000,10000), trans="log1p", expand=c(0,0)) +
+  scale_y_continuous(breaks = c(0,1,10,100,1000,10000), trans="log1p", expand=c(0,0)) +
+  theme_minimal() +
+  labs(x = "Genes",
+       y = "Average counts per sample") +
+  ggtitle("Endothelial cells")
+
+# epithelial cells
+hist_epi <- ggplot(avg_expr_epi, aes(x=Average)) +
+  geom_histogram(fill ="darkseagreen", bins = 50) +
+  scale_x_continuous(breaks = c(0,1,10,100,1000,10000), trans="log1p", expand=c(0,0)) +
+  scale_y_continuous(breaks = c(0,1,10,100,1000,10000), trans="log1p", expand=c(0,0)) +
+  theme_minimal() +
+  labs(x = "Genes",
+       y = "Average counts per sample") +
+  ggtitle("Epithelial cells")
+
+# fibroblasts
+hist_fibro <- ggplot(avg_expr_fibro, aes(x=Average)) +
+  geom_histogram(fill ="darkred", bins = 50) +
+  scale_x_continuous(breaks = c(0,1,10,100,1000,10000), trans="log1p", expand=c(0,0)) +
+  scale_y_continuous(breaks = c(0,1,10,100,1000,10000), trans="log1p", expand=c(0,0)) +
+  theme_minimal() +
+  labs(x = "Genes",
+       y = "Average counts per sample") +
+  ggtitle("Fibroblasts")
+```
+
+Distributions of the average counts per sample:
+
+```{r}
+grid.arrange(hist_endo, hist_epi, hist_fibro, ncol=3)
+```
+
+We look at in how many samples a gene was detected.
+
+```{r, echo=FALSE}
+num_det_endo <- data.frame(Detected = rowSums(expr_endo > 0))
+num_det_epi <- data.frame(Detected = rowSums(expr_epi > 0))
+num_det_fibro <- data.frame(Detected = rowSums(expr_fibro > 0))
+```
+
+```{r, echo=FALSE}
+# endothelial cells
+viol_endo <- ggplot(num_det_endo, aes(x="", y=Detected)) +
+  geom_violin(fill="lightblue") +
+  theme_minimal() +
+  labs(y="Number of genes detected\n across samples", x="") +
+  ggtitle("Endothelial cells")
+
+det_endo <- ggplot(num_det_endo, aes(x=factor(Detected))) +
+  geom_bar(fill="lightblue") +
+  theme_minimal() +
+  labs(x="Number of genes detected\n across samples", y="Count") +
+  ggtitle("Endothelial cells")
+
+# epithelial cells
+viol_epi <- ggplot(num_det_epi, aes(x="", y=Detected)) +
+  geom_violin(fill="darkseagreen") +
+  theme_minimal() +
+  labs(y="Number of genes detected\n across samples", x="") +
+  ggtitle("Epithelial cells")
+
+det_epi <- ggplot(num_det_epi, aes(x=factor(Detected))) +
+  geom_bar(fill="darkseagreen") +
+  theme_minimal() +
+  labs(x="Number of genes detected\n across samples", y="Count") +
+  ggtitle("Epithelial cells")
+
+# fibroblasts
+viol_fibro <- ggplot(num_det_fibro, aes(x="", y=Detected)) +
+  geom_violin(fill="darkred") +
+  theme_minimal() +
+  labs(y="Number of genes detected\n across samples", x="") +
+  ggtitle("Fibroblasts")
+
+det_fibro <- ggplot(num_det_fibro, aes(x=factor(Detected))) +
+  geom_bar(fill="darkred") +
+  theme_minimal() +
+  labs(x="Number of genes detected\n across samples", y="Count") +
+  ggtitle("Fibroblasts")
+```
+
+In order to get a better understanding of the distribution of our detected genes, we create a violin plot showing the number of genes detected across samples over the count for the different types of structural cells.
+
+```{r}
+grid.arrange(viol_endo, viol_epi, viol_fibro, ncol=3)
+```
+
+From this plot we can see we have a high number of genes which are barely expressed or completely unexpressed in the three cell types. Hence, we select the expressed genes and mark them in the meta dataframe to trace them for our following analysis. Moreover, from the violin plot we can see the distribution of the expression of the three types of cells is distributed as a negative-binomial distribution.
+
+We filter away the unexpressed genes based on a criteria rowMeans(expr_endo \> 0) \>= 0.5 \| rowMeans(expr_endo) \>= 1, the count of genes pertinent to our analysis has now reduced to 14478 for endothelial cells, 15461 for epithelial cells, and 15783 for fibroblasts. We have added a column to mark these relevant genes. Moving forward, our analysis will focus exclusively on this subset of genes.
+
+```{r}
+expressed_endo <- rowMeans(expr_endo > 0) >= 0.5 | rowMeans(expr_endo) >= 1
+expressed_epi <- rowMeans(expr_epi > 0) >= 0.5 | rowMeans(expr_epi) >= 1
+expressed_fibro <- rowMeans(expr_fibro > 0) >= 0.5 | rowMeans(expr_fibro) >= 1
+meta_genes$expressed_endo <- expressed_endo
+meta_genes$expressed_epi <- expressed_epi
+meta_genes$expressed_fibro <- expressed_fibro
+```
+
+```{r, echo=FALSE}
+length(meta_genes$expressed_endo[which(meta_genes$expressed_endo == TRUE)])
+length(meta_genes$expressed_epi[which(meta_genes$expressed_epi == TRUE)])
+length(meta_genes$expressed_fibro[which(meta_genes$expressed_fibro == TRUE)])
+```
+
+```{r, echo=FALSE}
+outlier_list_endo <- c("SRR11256378", "SRR11256377", "SRR11256465")
+outlier_list_epi <- c("SRR11256442", "SRR11256458", "SRR11256459", "SRR11256460")
+outlier_list_fibro <- c("SRR11256383", "SRR11256384", "SRR11256401", "SRR11256402")
+
+outlier_endo <- meta_endo$Run %in% outlier_list_endo
+outlier_epi <- meta_epi$Run %in% outlier_list_epi
+outlier_fibro <- meta_fibro$Run %in% outlier_list_fibro
+
+meta_endo$Outlier <- outlier_endo
+meta_epi$Outlier <- outlier_epi
+meta_fibro$Outlier <- outlier_fibro
+```
+
+## Comparing samples unbiasedly
+
+To assess the correlation between samples whilst disregarding information about sample covariates, we will use Spearman's rank correlation coefficient (SCC). This choice is due to our data not conforming to normal or log-normal distributions. Unlike Pearson's correlation coefficient (PCC), SCC is non-parametric, making it more adaptable and robust to the nature of our data distribution.
+
+```{r}
+corr_spearman_endo <- cor(expr_endo[meta_genes$expressed_endo,], method = "spearman")
+corr_spearman_epi <- cor(expr_epi[meta_genes$expressed_epi,], method = "spearman")
+corr_spearman_fibro <- cor(expr_fibro[meta_genes$expressed_fibro,], method = "spearman")
+```
+
+Therefore, we will generate two hierarchical clustering trees to analyze our samples. This approach will help us better understand the clustering patterns of our samples, specifically focusing on 'Organ' (our variable of interest) and 'Replicate' (our covariate).
+
+Furthermore, we will also use the hierarchical clustering trees to observe the behaviour of our outlier samples, as we have marked the outliers from the mapping phase in red.
+
+```{r, echo=FALSE}
+# Function to color leaves and label dendrogram based on 'Organ' or 'Replicate'.
+plot_dendrogram <- function(hclust_result, meta, title, label_column, leaf_color_func) {
+  # Convert the hierarchical clustering results into a dendrogram.
+  dendrogram <- as.dendrogram(hclust_result)
+  # Apply the coloring function to the dendrogram.
+  dendrogram_colored <- dendrapply(dendrogram, leaf_color_func)
+  # Match the 'Run' labels with the 'Organ' or 'Replicate' labels from the metadata.
+  # This ensures that the correct 'Organ' or 'Replicate' label is applied to each sample in the dendrogram.
+  matched_labels <- meta[match(labels(dendrogram_colored), meta$Run), label_column]
+  # Set the matched labels for each leaf in the dendrogram.
+  labels(dendrogram_colored) <- matched_labels
+  # Plot the dendrogram with the specified title.
+  plot(dendrogram_colored, main=title)
+}
+
+colorLeafs <- function(node) {
+  # check if the node is a leaf.
+  if (is.leaf(node)) {
+    # retrieve the label of this node.
+    node_label <- attr(node, "label")
+    # check if the label is in the outlier list.
+    if (node_label %in% outlier_list) {
+      # if it is, set the color of this node's label to red.
+      attr(node, "nodePar") <- list(lab.col="red", pch=NA)
+    }
+  }
+  # return the node, modified or not.
+  return(node)
+}
+```
+
+```{r, echo=FALSE}
+# perform hierarchical clustering once, as it is the same for both cases.
+hclust_result_endo <- hclust(as.dist(1 - corr_spearman_endo))
+hclust_result_epi <- hclust(as.dist(1 - corr_spearman_epi))
+hclust_result_fibro <- hclust(as.dist(1 - corr_spearman_fibro))
+
+hclust_result_endo$labels <- meta_endo$Run  # ensure labels correspond to 'Run'
+hclust_result_epi$labels <- meta_epi$Run
+hclust_result_fibro$labels <- meta_fibro$Run
+
+# define the merged outlier list
+outlier_list <- c(outlier_list_endo, outlier_list_epi, outlier_list_fibro)
+
+# plot for 'Organ' (variable of interest)
+par(mfrow = c(1, 3))
+plot_dendrogram(hclust_result_endo, meta_endo, "Hierarchical clustering by\n organ in endothelial cells", "Organ", colorLeafs)
+plot_dendrogram(hclust_result_epi, meta_epi, "Hierarchical clustering by\n organ in epithelial cells", "Organ", colorLeafs)
+plot_dendrogram(hclust_result_fibro, meta_fibro, "Hierarchical clustering by\n organ in fibroblasts", "Organ", colorLeafs)
+
+# plot for 'Replicate' (covariate)
+plot_dendrogram(hclust_result_endo, meta_endo, "Hierarchical clustering by\n replicate in endothelial cells", "Replicate", colorLeafs)
+plot_dendrogram(hclust_result_epi, meta_epi, "Hierarchical clustering by\n replicate in epithelial cells", "Replicate", colorLeafs)
+plot_dendrogram(hclust_result_fibro, meta_fibro, "Hierarchical clustering by\n replicate in fibroblasts", "Replicate", colorLeafs)
+par(mfrow = c(1, 1))
+```
+
+The samples display clear clustering by organ type, indicating that the organ from which they were derived has a significant impact on the results in all of the three cell types. In contrast, the distribution of replicate numbers across the clusters appears to be random, suggesting that it does not markedly affect the organ-specific clustering.
+
+Regarding the outliers, there is some evidence of clustering among them in the three cell types. However, this may not necessarily indicate an anomaly, as all outliers are sourced from similar organs (Spleen and Liver), which naturally tend to group together in the analysis, regardless of their outlier status. However, in the epithelial clustering, there is one clear outlier for Spleen which does not cluster well with any of the other samples. Thus, as it has a poor unique mapping rate and does not seem to agree with the rest of our data, we choose to remove it from further downstream analysis.
+
+```{r, echo=FALSE}
+expr_epi <- expr_epi[, -which(colnames(expr_epi) == "SRR11256458")]
+meta_epi <- meta_epi[-which(meta_epi$Run == "SRR11256458"), ]
+
+dim(expr_epi)
+dim(meta_epi)
+```
+
+We did attempt to first perform batch correction using ComBat, but found that it had no effect on the quality of our clustering. Instead of using ComBat, we will account for the batch effect introduced by the replicates by incorporating it as a covariate in our differential expression analysis.
+
+## Differential expression analysis
+### Methods
+
+For the differential expression, we want to compare three methods: anova test, DESeq2, and edgeR. The following table compares the three methods for differential expression analysis:
+
+| Method         | Description                                                                                                                                                                                                                                                    | Key Features                                                                                                                                                                                                |
+|--------------------|-------------------------|---------------------------|
+| **ANOVA Test** | ANOVA (Analysis of Variance) is a statistical method used to compare means of two or more groups. In the context of gene expression, it can be used to determine if the expression of a gene is significantly different across different conditions or groups. | \- Suitable for comparing multiple groups. <br> - Assumes normal distribution and homogeneity of variances. <br> - Less suited for count data typical in RNA-seq.                                           |
+| **DESeq2**     | DESeq2 is a statistical method tailored for RNA-seq data analysis. It's designed to normalize count data and model variance for differential expression analysis.                                                                                              | \- Uses negative binomial distribution to model RNA-seq data. <br> - Adjusts for library size and other normalization factors. <br> - Provides methods for estimating variance and significance of changes. |
+| **edgeR**      | edgeR is another popular tool for analyzing RNA-seq count data. Similar to DESeq2, it models count data using a negative binomial distribution but has some differences in its approach to normalization and variance estimation.                              | \- Effective for small sample sizes. <br> - Uses an overdispersed Poisson model to account for biological variability. <br> - Employs empirical Bayes methods for estimating dispersions.                   |
+
+Each method has its strengths and is best suited for different types of data sets and research objectives. The choice of method should be guided by the specific characteristics of the data and the research goals.
+
+### Run analysis
+
+Anova test assumes a normal distribution across our data, which cannot be the case with expression data, but sometimes the approximation still works. Therefore, in the first place, we perform an anova test to then compare the results with two more advanced methods, namely edgeR and DESeq2.
+
+```{r, warning=FALSE, message=FALSE}
+# function to perform the differential expression test with ANOVA
+ANOVA_test <- function(expr,
+                    cond,
+                    ctrl = NULL,
+                    covar = NULL,
+                    padj_method = p.adjust.methods){
+    pval_fc <- data.frame(t(pbapply(expr, 1, function(e){
+    dat <- data.frame(y = log1p(e),
+                      cond = cond)
+    if (! is.null(covar))
+      dat <- data.frame(dat, covar)
+    
+    m1 <- lm(y ~ ., data = dat)
+    m0 <- lm(y ~ . - cond, data = dat)
+    test <- anova(m1, m0)
+    pval <- test$Pr[2]
+    
+    avgs <- tapply(log1p(e), cond, mean)
+    if (! is.null(ctrl) && sum(cond %in% ctrl) > 0){
+      fc <- exp(max(avgs[names(avgs) != ctrl]) - avgs[ctrl])
+    } else{
+      fc <- exp(max(avgs) - min(avgs))
+    }
+    
+    return(c(pval = unname(pval), fc = unname(fc)))
+  })), row.names = rownames(expr))
+  padj <- p.adjust(pval_fc$pval, method = padj_method)
+  return(data.frame(pval_fc, "padj" = padj)[,c("pval","padj","fc")])
+}
+```
+
+```{r, message=FALSE, warning=FALSE}
+# pipeline for endothelial cells
+#| warning: false
+res_DE_endo <- ANOVA_test(expr = expr_endo[meta_genes$expressed_endo,],
+                  cond = meta_endo$Organ,
+                  covar = meta_endo$Replicate)
+```
+
+```{r, echo=FALSE}
+res_DE_endo <- res_DE_endo %>%
+  mutate(DE = padj < 0.1 & fc > 2) %>%
+  rownames_to_column(var="geneID") # with rownames_to_column we create a column with rownames, since it is easier to work with in tibble
+syms <- meta_genes %>% filter(ensembl_gene_id_version %in% res_DE_endo$geneID)
+res_DE_endo <- res_DE_endo %>% mutate(DEG = ifelse(DE, syms$mgi_symbol, NA))
+
+volcano_anova_endo <- ggplot(res_DE_endo, aes(x = log(fc), y = -log10(padj), col=DE, label=DEG)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_vline(xintercept=c(log(2), 0), col="#303030", linetype="dotted") +
+  geom_hline(yintercept=-log10(0.1), col="#303030", linetype="dotted") +
+  scale_color_manual(values=c("#909090", "red")) +
+  theme_minimal() +
+  labs(x="Log2 Fold Change", y="-Log10 Adjusted P-Value", title="Endothelial cells")
+
+# pipeline for epithelial cells
+res_DE_epi <- ANOVA_test(expr = expr_epi[meta_genes$expressed_epi,],
+                  cond = meta_epi$Organ,
+                  covar = meta_epi$Replicate)
+res_DE_epi <- res_DE_epi %>%
+  mutate(DE = padj < 0.1 & fc > 2) %>%
+  rownames_to_column(var="geneID")
+syms <- meta_genes %>% filter(ensembl_gene_id_version %in% res_DE_epi$geneID)
+res_DE_epi <- res_DE_epi %>% mutate(DEG = ifelse(DE, syms$mgi_symbol, NA))
+
+volcano_anova_epi <- ggplot(res_DE_epi, aes(x = log(fc), y = -log10(padj), col=DE, label=DEG)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_vline(xintercept=c(log(2), 0), col="#303030", linetype="dotted") +
+  geom_hline(yintercept=-log10(0.1), col="#303030", linetype="dotted") +
+  scale_color_manual(values=c("#909090", "red")) +
+  theme_minimal() +
+  labs(x="Log2 Fold Change", y="-Log10 Adjusted P-Value", title="Epithelial cells")
+
+# pipeline for fibroblasts
+res_DE_fibro <- ANOVA_test(expr = expr_fibro[meta_genes$expressed_fibro,],
+                  cond = meta_fibro$Organ,
+                  covar = meta_fibro$Replicate)
+res_DE_fibro <- res_DE_fibro %>%
+  mutate(DE = padj < 0.1 & fc > 2) %>%
+  rownames_to_column(var="geneID")
+syms <- meta_genes %>% filter(ensembl_gene_id_version %in% res_DE_fibro$geneID)
+res_DE_fibro <- res_DE_fibro %>% mutate(DEG = ifelse(DE, syms$mgi_symbol, NA))
+
+volcano_anova_fibro <- ggplot(res_DE_fibro, aes(x = log(fc), y = -log10(padj), col=DE, label=DEG)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_vline(xintercept=c(log(2), 0), col="#303030", linetype="dotted") +
+  geom_hline(yintercept=-log10(0.1), col="#303030", linetype="dotted") +
+  scale_color_manual(values=c("#909090", "red")) +
+  theme_minimal() +
+  labs(x="Log2 Fold Change", y="-Log10 Adjusted P-Value", title="Fibroblasts")
+```
+Since ANOVA assumes a normal distribution across data, we make use of the Negative Binomial (NB) distribution using edgeR or DESeq2. We can perform the edgeR and DESeq2 analyses to test if genes across organs are truly DE genes or the differential expression is just caused due to the different replicates, hence we model them with organs and replicate numbers combined.
+
+```{r, echo=FALSE}
+# load in raw counts data for DESeq2 and edgeR
+ensembl <- useEnsembl(biomart = "ensembl",
+                      dataset = "mmusculus_gene_ensembl")
+tx2gene <- getBM(attributes = c("ensembl_transcript_id_version",
+                                "ensembl_gene_id_version"),
+                 filters = "ensembl_gene_id_version",
+                 values = rownames(expr),
+                 mart = ensembl) %>%
+  dplyr::select(ensembl_transcript_id_version, ensembl_gene_id_version)
+
+# endothelial cells
+samples_endo <-  as.character(meta_endo$Run)
+files_endo <- file.path("rsem_output", samples_endo, paste0(samples_endo,".isoforms.results"))
+txi_endo <- tximport(files_endo, type = "rsem", tx2gene = tx2gene)
+
+# epithelial cells
+samples_epi <-  as.character(meta_epi$Run)
+files_epi <- file.path("rsem_output", samples_epi, paste0(samples_epi,".isoforms.results"))
+txi_epi <- tximport(files_epi, type = "rsem", tx2gene = tx2gene)
+
+# fibroblasts
+samples_fibro <-  as.character(meta_fibro$Run)
+files_fibro <- file.path("rsem_output", samples_fibro, paste0(samples_fibro,".isoforms.results"))
+txi_fibro <- tximport(files_fibro, type = "rsem", tx2gene = tx2gene)
+```
+
+For DESeq2, we use raw counts matrix as input (that is not normalized), and specify our design matrix as \~ Organ + Replicate, and then later reduce by Replicate when taking the likelihood ratio test.
+
+```{r, warning=FALSE, message=FALSE}
+# pipeline for endothelial cells
+dds_endo <- DESeqDataSetFromTximport(txi_endo,
+                                colData = meta_endo,
+                                design = ~ Organ+Replicate)
+dds_filtered_endo <- dds_endo[intersect(rownames(expr_endo)[meta_genes$expressed_endo], rownames(dds_endo)),]
+dds_filtered_endo <- DESeq(dds_filtered_endo, test="LRT", reduced= ~ Replicate)
+res_DESeq2_raw_endo <- results(dds_filtered_endo)
+```
+
+```{r, echo=FALSE, message=FALSE}
+# create a dataframe from the results of DESeq2
+res_DESeq2_endo <- as.data.frame(res_DESeq2_raw_endo@listData)
+rownames(res_DESeq2_endo) <- rownames(res_DESeq2_raw_endo)
+# pipeline for epithelial cells
+dds_epi <- DESeqDataSetFromTximport(txi_epi,
+                                colData = meta_epi,
+                                design = ~ Organ+Replicate)
+dds_filtered_epi <- dds_epi[intersect(rownames(expr_epi)[meta_genes$expressed_epi], rownames(dds_epi)),]
+dds_filtered_epi <- DESeq(dds_filtered_epi, test="LRT", reduced= ~ Replicate)
+res_DESeq2_raw_epi <- results(dds_filtered_epi)
+# create a dataframe from the results of DESeq2
+res_DESeq2_epi <- as.data.frame(res_DESeq2_raw_epi@listData)
+rownames(res_DESeq2_epi) <- rownames(res_DESeq2_raw_epi)
+
+# pipeline for fibroblasts
+dds_fibro <- DESeqDataSetFromTximport(txi_fibro,
+                                colData = meta_fibro,
+                                design = ~ Organ+Replicate)
+dds_filtered_fibro <- dds_fibro[intersect(rownames(expr_fibro)[meta_genes$expressed_fibro], rownames(dds_fibro)),]
+dds_filtered_fibro <- DESeq(dds_filtered_fibro, test="LRT", reduced= ~ Replicate)
+res_DESeq2_raw_fibro <- results(dds_filtered_fibro)
+# create a dataframe from the results of DESeq2
+res_DESeq2_fibro <- as.data.frame(res_DESeq2_raw_fibro@listData)
+rownames(res_DESeq2_fibro) <- rownames(res_DESeq2_raw_fibro)
+```
+
+For edgeR, we also use the raw counts.
+
+```{r, warning=FALSE, message=FALSE}
+# pipeline for endothelial cells
+grp_endo <- meta_endo$Organ
+group_endo <- factor(grp_endo)
+
+rep_endo <- meta_endo$Replicate
+replicate_endo <- factor(rep_endo)
+
+design_endo <- model.matrix(~ replicate_endo + group_endo)
+cts_endo <- txi_endo$counts
+
+normMat_endo <- txi_endo$length
+normMat_endo <- normMat_endo/exp(rowMeans(log(normMat_endo)))
+normCts_endo <- cts_endo/normMat_endo
+
+y_endo <- DGEList(counts=cts_endo, group=group_endo)
+y_endo <- calcNormFactors(y_endo)
+y_endo <- scaleOffset(y_endo, normMat_endo)
+y_endo <- estimateDisp(y_endo,design_endo)
+fit_endo <- glmQLFit(y_endo,design_endo)
+
+qlf_endo <- glmQLFTest(fit_endo, coef=4:10)
+res_edgeR_endo <- topTags(qlf_endo, n=Inf, p.value=0.1)$table
+```
+
+We use quasi-likelihood F-test (QL) instead of the likelihood ratio test because it is better for DE analysis of RNA-bulk data for edgeR.
+
+```{r, echo=FALSE}
+# pipeline for epithelial cells
+grp_epi <- meta_epi$Organ
+group_epi <- factor(grp_epi)
+rep_epi <- meta_epi$Replicate
+replicate_epi <- factor(rep_epi)
+design_epi <- model.matrix(~ replicate_epi + group_epi)
+cts_epi <- txi_epi$counts
+normMat_epi <- txi_epi$length
+normMat_epi <- normMat_epi/exp(rowMeans(log(normMat_epi)))
+normCts_epi <- cts_epi/normMat_epi
+y_epi <- DGEList(counts=cts_epi, group=group_epi)
+y_epi <- calcNormFactors(y_epi)
+y_epi <- scaleOffset(y_epi, normMat_epi)
+y_epi <- estimateDisp(y_epi,design_epi)
+fit_epi <- glmQLFit(y_epi,design_epi)
+# use quasi-likelihood F-test (QL) instead of the likelihood ratio test because it is better for DE analysis of RNA-bulk data
+qlf_epi <- glmQLFTest(fit_epi, coef=4:10)
+res_edgeR_epi <- topTags(qlf_epi, n=Inf, p.value=0.1)$table
+
+# pipeline for fibrobalsts
+grp_fibro <- meta_fibro$Organ
+group_fibro <- factor(grp_fibro)
+rep_fibro <- meta_fibro$Replicate
+replicate_fibro <- factor(rep_fibro)
+design_fibro <- model.matrix(~ replicate_fibro + group_fibro)
+cts_fibro <- txi_fibro$counts
+normMat_fibro <- txi_fibro$length
+normMat_fibro <- normMat_fibro/exp(rowMeans(log(normMat_fibro)))
+normCts_fibro <- cts_fibro/normMat_fibro
+y_fibro <- DGEList(counts=cts_fibro, group=group_fibro)
+y_fibro <- calcNormFactors(y_fibro)
+y_fibro <- scaleOffset(y_fibro, normMat_fibro)
+y_fibro <- estimateDisp(y_fibro,design_fibro)
+fit_fibro <- glmQLFit(y_fibro,design_fibro)
+# use quasi-likelihood F-test (QL) instead of the likelihood ratio test because it is better for DE analysis of RNA-bulk data
+qlf_fibro <- glmQLFTest(fit_fibro, coef=4:10)
+res_edgeR_fibro <- topTags(qlf_fibro, n=Inf, p.value=0.1)$table
+```
+
+We can now compare the p-values obtained from the anova test, DESeq2, and edgeR.
+
+```{r, echo=FALSE}
+# order the genes in the three methods to compare p-values and logFC
+res_DESeq2_endo <- res_DESeq2_endo[rownames(res_edgeR_endo), ]
+res_DE_endo <- res_DE_endo[match(rownames(res_edgeR_endo), res_DE_endo$geneID),]
+
+res_DESeq2_epi <- res_DESeq2_epi[rownames(res_edgeR_epi), ]
+res_DE_epi <- res_DE_epi[match(rownames(res_edgeR_epi), res_DE_epi$geneID),]
+
+res_DESeq2_fibro <- res_DESeq2_fibro[rownames(res_edgeR_fibro), ]
+res_DE_fibro <- res_DE_fibro[match(rownames(res_edgeR_fibro), res_DE_fibro$geneID),]
+
+log_neg_p_endo <- data.frame(DESeq2 = -log10(res_DESeq2_endo$padj),
+                        edgeR = -log10(res_edgeR_endo$FDR),
+                        anova = -log10(res_DE_endo$padj))
+log_neg_p_epi <- data.frame(DESeq2 = -log10(res_DESeq2_epi$padj),
+                        edgeR = -log10(res_edgeR_epi$FDR),
+                        anova = -log10(res_DE_epi$padj))
+log_neg_p_fibro <- data.frame(DESeq2 = -log10(res_DESeq2_fibro$padj),
+                        edgeR = -log10(res_edgeR_fibro$FDR),
+                        anova = -log10(res_DE_fibro$padj))
+```
+
+Comparison in endothelial cells:
+
+```{r, echo=FALSE}
+plot1_endo <- ggplot(log_neg_p_endo, aes(x = DESeq2, y = anova)) +
+  geom_point() +
+  ggtitle("anova vs DESeq2") +
+  theme_bw() +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.5, lineend = "square")
+    )
+
+plot2_endo <- ggplot(log_neg_p_endo, aes(x = edgeR, y = anova)) +
+  geom_point() +
+  ggtitle("anova vs edgeR") +
+  theme_bw() +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.5, lineend = "square")
+    )
+
+plot3_endo <- ggplot(log_neg_p_endo, aes(x = DESeq2, y = edgeR)) +
+  geom_point() +
+  ggtitle("edgeR vs DESeq2") +
+  theme_bw() +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.5, lineend = "square")
+    )
+
+grid.arrange(plot1_endo, plot2_endo, plot3_endo, ncol = 3)
+```
+
+We see that the p-values are quite different between the different methods. As we want to be stringent with which genes we investigate, we proceed with only the differential expressed genes which were found using both DESeq2 and edgeR. We note that this is a conservative estimate.
+
+ENDOTHELIAL CELLS RESULTS:
+
+```{r, echo=FALSE}
+# pipeline for endothelial cells
+# find the DEGs and their expression across organs
+res_DESeq2_DEG_endo <- res_DESeq2_endo %>%
+  mutate(DE = padj < 0.1 & abs(log2FoldChange) > 2)
+res_DESeq2_DEG_endo <- res_DESeq2_DEG_endo %>% drop_na(DE)
+res_DESeq2_DEG_endo <- res_DESeq2_DEG_endo %>% rownames_to_column()
+DEG_endo <- res_DESeq2_DEG_endo$rowname[res_DESeq2_DEG_endo$DE]
+avg_expr_endo <- sapply(sort(unique(meta_endo$Organ)), function(layer)
+  rowMeans(expr_endo[,which(meta_endo$Organ == layer)]))
+max_layer_DEG_endo <- setNames(colnames(avg_expr_endo)[apply(avg_expr_endo[DEG_endo,], 1, which.max)], DEG_endo)
+table(max_layer_DEG_endo)
+avg_expr_DEG_list_endo <- tapply(names(max_layer_DEG_endo), max_layer_DEG_endo, function(x) avg_expr_endo[x,])
+scaled_expr_DEG_list_endo <- lapply(avg_expr_DEG_list_endo, function(x) t(scale(t(x))))
+
+# plot the expression of the DEGs
+# DE_plots_endo = list()
+for(layer in names(scaled_expr_DEG_list_endo)) {
+  df_endo <- as.data.frame(scaled_expr_DEG_list_endo[[layer]])
+  long_df_endo <- pivot_longer(df_endo, col = colnames(df_endo), names_to = "Organs", values_to = "Values")
+  print(ggplot(long_df_endo, aes(x = Organs, y = Values, fill = Organs)) +
+  geom_boxplot(width=0.8) +
+  labs(title="") +
+  theme_minimal() +
+  ggtitle(paste0(layer, " (", nrow(scaled_expr_DEG_list_endo[[layer]]), ")")))
+  #DE_plots_endo <- c(DE_plots_endo, list(p))
+}
+#do.call(grid.arrange, c(DE_plots_endo, nrow = 8, ncol = 1))
+```
+
+EPITHELIAL CELLS RESULTS:
+
+```{r, echo=FALSE}
+# pipeline for epithelial cells
+# find the DEGs and their expression across organs
+res_DESeq2_DEG_epi <- res_DESeq2_epi %>%
+  mutate(DE = padj < 0.1 & abs(log2FoldChange) > 2)
+res_DESeq2_DEG_epi <- res_DESeq2_DEG_epi %>% drop_na(DE)
+res_DESeq2_DEG_epi <- res_DESeq2_DEG_epi %>% rownames_to_column()
+DEG_epi <- res_DESeq2_DEG_epi$rowname[res_DESeq2_DEG_epi$DE]
+avg_expr_epi <- sapply(sort(unique(meta_epi$Organ)), function(layer)
+  rowMeans(expr_epi[,which(meta_epi$Organ == layer)]))
+max_layer_DEG_epi <- setNames(colnames(avg_expr_epi)[apply(avg_expr_epi[DEG_epi,], 1, which.max)], DEG_epi)
+table(max_layer_DEG_epi)
+avg_expr_DEG_list_epi <- tapply(names(max_layer_DEG_epi), max_layer_DEG_epi, function(x) avg_expr_epi[x,])
+scaled_expr_DEG_list_epi <- lapply(avg_expr_DEG_list_epi, function(x) t(scale(t(x))))
+
+# plot the expression of the DEGs
+#DE_plots_epi = list()
+for(layer in names(scaled_expr_DEG_list_epi)) {
+  df_epi <- as.data.frame(scaled_expr_DEG_list_epi[[layer]])
+  long_df_epi <- pivot_longer(df_epi, col = colnames(df_epi), names_to = "Organs", values_to = "Values")
+  print(ggplot(long_df_epi, aes(x = Organs, y = Values, fill = Organs)) +
+  geom_boxplot(width=0.8) +
+  labs(title="") +
+  theme_minimal() +
+  ggtitle(paste0(layer, " (", nrow(scaled_expr_DEG_list_epi[[layer]]), ")")))
+  #DE_plots_epi <- c(DE_plots_epi, list(p))
+}
+#do.call(grid.arrange, c(DE_plots_epi, nrow = 8, ncol = 1))
+```
+
+FIBROBLASTS RESULTS:
+
+```{r, echo=FALSE}
+# pipeline for fibroblasts
+# find the DEGs and their expression across organs
+res_DESeq2_DEG_fibro <- res_DESeq2_fibro %>%
+  mutate(DE = padj < 0.1 & abs(log2FoldChange) > 2)
+res_DESeq2_DEG_fibro <- res_DESeq2_DEG_fibro %>% drop_na(DE)
+res_DESeq2_DEG_fibro <- res_DESeq2_DEG_fibro %>% rownames_to_column()
+DEG_fibro <- res_DESeq2_DEG_fibro$rowname[res_DESeq2_DEG_fibro$DE]
+avg_expr_fibro <- sapply(sort(unique(meta_fibro$Organ)), function(layer)
+  rowMeans(expr_fibro[,which(meta_fibro$Organ == layer)]))
+max_layer_DEG_fibro <- setNames(colnames(avg_expr_fibro)[apply(avg_expr_fibro[DEG_fibro,], 1, which.max)], DEG_fibro)
+table(max_layer_DEG_fibro)
+avg_expr_DEG_list_fibro <- tapply(names(max_layer_DEG_fibro), max_layer_DEG_fibro, function(x) avg_expr_fibro[x,])
+scaled_expr_DEG_list_fibro <- lapply(avg_expr_DEG_list_fibro, function(x) t(scale(t(x))))
+
+# plot the expression of the DEGs
+#DE_plots_fibro = list()
+for(layer in names(scaled_expr_DEG_list_fibro)) {
+  df_fibro <- as.data.frame(scaled_expr_DEG_list_fibro[[layer]])
+  long_df_fibro <- pivot_longer(df_fibro, col = colnames(df_fibro), names_to = "Organs", values_to = "Values")
+  print(ggplot(long_df_fibro, aes(x = Organs, y = Values, fill = Organs)) +
+  geom_boxplot(width=0.8) +
+  labs(title="") +
+  theme_minimal() +
+  ggtitle(paste0(layer, " (", nrow(scaled_expr_DEG_list_fibro[[layer]]), ")")))
+  #DE_plots_fibro <- c(DE_plots_fibro, list(p))
+}
+#do.call(grid.arrange, c(DE_plots_fibro, nrow = 8, ncol = 1))
+```
+
+# ATAC-seq analysis
+
+## Indexing processing
+
+### Sorting and indexing
+
+ATAC-seq, short for Assay for Transposase-Accessible Chromatin using sequencing, is a powerful technique widely utilized in molecular biology.
+This method offers valuable insights into the chromatin accessibility of a genome.
+Chromatin accessibility is defined as the ease with which DNA-binding proteins, including transcription factors, can access and interact with specific regions of the DNA.
+When working with ATAC-seq, there can be the possibility to see the state of the chromatin, something not really possible when considering RNA-seq data.
+
+To introduce this analysis, we briefly go through the main steps:
+1. Alignment is the first activity when starting studying some ATAC-seq data. In this step, our files are transformed from SAM to BAM. In our analysis we obtain BAM files of all the three cell types after the alignment.
+2. Sorting BAM files and obtaining the indexing of these files. Sorting a BAM file involves arranging the reads in a file based on their chromosomal coordinates. This is essential for efficient retrieval of specific reads or regions of interest. Without the sorting step, searching for specific reads would require scanning through the entire file, which can be time-consuming and computationally expensive. Indexing a sorted BAM file creates a small auxiliary index file that stores information about the position of reads in the sorted file. This index file enables efficient random access to specific reads or regions of interest without having to resort to scanning the entire file.
+After those activities, there is the possibility of continuing the computational pipeline obtaining BigWig files and calling mac2 callpeaks. However, since the indexing requires a lot of time to run, therefore we analysed intermediate steps where we load intermediate results and continue the pipeline, avoiding to run all the steps de novo.
+
+```{r, eval=FALSE}
+outBAM_dir <- "ATACseq/atac_fibro_bam"
+
+bam_files <- list.files(outBAM_dir, pattern = "\\.bam$", full.names = TRUE)
+
+# Process each BAM file
+for(file in bam_files) {
+  # Generate a new filename for the sorted BAM file
+  sortedBAM <- file.path(dirname(file), paste0("Sorted_", basename(file)))
+
+  # Sort the BAM file
+  sortBam(file, gsub("\\.bam$", "", basename(sortedBAM)))
+
+  # Index the sorted BAM file
+  indexBam(sortedBAM)
+}
+
+# This code is used for the Bigwig files
+sortedBAM_files <- gsub("SRR", "Sorted_SRR", bam_files)
+# In case of multiple files
+openRegionBigWig <- gsub("\\.sam\\.bam", "_openRegions.bw", sortedBAM_files)
+
+# loop over each file to process open regions and export to bigWig
+for(i in seq_along(sortedBAM_files)) {
+  # convert the 'open' reads to a GRanges object
+  atacFragments_Open <- GRanges(atacReads_Open_list[[i]])
+  
+  # calculate coverage and export to BigWig format
+  export.bw(coverage(atacFragments_Open), openRegionBigWig[i])
+}
+
+# this code is used for peak calling
+output_dir <- "/Users/guidoputignano/Research/stat426/Project/Main/ATACseq/fibro_peaks"
+genome_size <- "mm"  
+
+# Assuming sortedBAM_files is your vector of sorted BAM file paths
+for(i in seq_along(sortedBAM_files)) {
+  # Extract the file name without the extension for naming in MACS2
+  file_name <- tools::file_path_sans_ext(basename(sortedBAM_files[i]))
+  
+  # Construct the MACS2 command with both output and error redirected to the log file
+  log_file <- paste(output_dir, "/", file_name, ".peak.log", sep="")
+  macs2_command <- paste("macs2 callpeak -t", sortedBAM_files[i],
+                         "--nomodel --shift -100 --extsize 200 --format BAM -g", genome_size,
+                         "-n", file_name, "--outdir", output_dir,
+                         "&>", log_file, "2>&1")
+  
+  # Print the command for debugging
+  cat("Executing: ", macs2_command, "\n")
+  
+  # Run the MACS2 command using system()
+  system(macs2_command)
+}
+
+```
+
+### Mapping
+
+Depending on the cell type, there are some differences in the mapped regions.
+It is possible to use Rsubread's propmapped to give us number of mapped and unmapped reads, as well as the mapping percentage.
+
+```{r, echo=FALSE}
+# Specify the file path
+setwd("C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT")
+epi_file_path <- "images/epi/pmapped.rds"
+endo_file_path <- "images/endo/pmapped.rds"
+fibro_file_path <- "images/fibro/pmapped.rds"
+
+epi_pmapped <- readRDS(epi_file_path)
+endo_pmapped <- readRDS(endo_file_path)
+fibro_pmapped <- readRDS(fibro_file_path)
+
+```
+
+```{r, echo=FALSE}
+epi_pmapped
+endo_pmapped
+fibro_pmapped
+```
+
+These three tables describe the mapping of epithelial cells, endothelial cells, and fibroblasts respectively.
+
+| Metric                 | Description                                                                                                                                                                                                                                                                                                                                                                                                                      |
+|----------------------------|--------------------------------------------|
+| **Mapped Reads**       | Mapped Reads are the sequence reads that have been successfully aligned to a reference genome. A read is considered "mapped" if the alignment software finds a location in the reference genome where the read matches or closely matches, taking into account possible sequencing errors or genetic variations. Mapped reads are critical for most downstream analyses, such as variant calling, gene expression analysis, etc. |
+| **Unmapped Reads**     | Unmapped Reads are the reads that could not be aligned to the reference genome. There could be several reasons for a read being unmapped, such as the read being too short, having poor quality, containing too many errors or ambiguities, or originating from a region not present in the reference genome (like a novel insert or a contaminant).                                                                             |
+| **Mapping Percentage** | Mapping Percentage is the percentage of total reads that have been successfully mapped to the reference genome. It is calculated as the number of mapped reads divided by the total number of reads (mapped plus unmapped), multiplied by 100. This metric is crucial for assessing the quality of the sequencing data and the effectiveness of the alignment process.                                                           |
+
+In case there may be the interest of knowing more about the sorted files we can use some functions like:
+
+```{r, eval=FALSE, message=FALSE}
+# Run samtools flagstat for a quick summary of alignments
+system(paste("samtools flagstat", sortedBAM))
+```
+
+Here we provide the description only in the case of the sample SRR11256152, since loop through all samples would be very time-consuming.
+
+```{r, echo=FALSE}
+# Define the data in a data frame
+sequencing_data <- data.frame(
+  Category = c("Total Reads", "Primary Reads", "Secondary Reads", "Supplementary Reads", 
+               "Duplicates", "Primary Duplicates", "Mapped", "Primary Mapped", 
+               "Paired in Sequencing", "Read1", "Read2", "Properly Paired", 
+               "With Itself and Mate Mapped", "Singletons", "With Mate Mapped to Different Chr", 
+               "With Mate Mapped to Different Chr (mapQ>=5)"),
+  Count = c("44497728 + 0", "44497728 + 0", "0 + 0", "0 + 0", 
+            "0 + 0", "0 + 0", "37177497 + 0 (83.55%)", "37177497 + 0 (83.55%)", 
+            "0 + 0", "0 + 0", "0 + 0", "0 + 0", 
+            "0 + 0", "0 + 0", "0 + 0", "0 + 0"),
+  Description = c("QC-passed reads + QC-failed reads", "Primary reads", "Secondary reads", "Supplementary reads",
+                  "Duplicate reads", "Primary duplicate reads", "Mapped reads (Percentage Mapped)", "Primary mapped reads (Percentage Mapped)",
+                  "Paired reads in sequencing", "First reads in pairs", "Second reads in pairs", "Properly paired reads",
+                  "Reads with itself and mate mapped", "Singleton reads", "Reads with mate mapped to a different chromosome",
+                  "Reads with mate mapped to a different chromosome with mapQ>=5")
+)
+
+# Render the table
+knitr::kable(sequencing_data, format = "html", table.attr = "style='width:100%'")
+```
+
+```{r, echo=FALSE, eval=FALSE}
+idxstatsBam(sortedBAM) %>% ggplot(aes(seqnames, mapped, fill = seqnames)) + 
+    geom_bar(stat = "identity") + coord_flip()
+```
+
+In the context of genomic data, identifiers like "GL456210.1," "JH584295.1," and "MU069434.1" represent specific sequences that are typically not part of the primary assembly of a genome. If you may want to compare the genome with a reference, you have to remove those elements, which are not of interest in our analysis, considering only the main chromosomal regions present in our read. 
+Making use of the chromosomal regions, it is possible to see the sample was a male, as also seen from the Y chromosome. Moreover, we can note there is an evident decrease in the mapped value from the Chromosome 1 until reaching the last chromosomes. That is something normal when considering mice chromosomes.
+
+```{r, echo=FALSE, eval=FALSE}
+#| fig-cap: "Distribution of the mapped reads depending on the sequence"
+#| fig-cap-align: center
+#| fig-subcap:
+#|   - "In @plot-1 is possible to see the distribution of the mapped reads depending on the sequence"
+#| layout-ncol: 1
+#| column: page
+
+idx_stats <- idxstatsBam(sortedBAM)
+
+# Define the chromosomes you're interested in: chr1 to chr19, X, Y, and Z
+selected_chromosomes <- c(paste0("chr", 1:19), "chrX", "chrY", "chrZ")
+
+# Filter for only certain chromosomes
+idx_stats_filtered <- idx_stats %>%
+    filter(seqnames %in% selected_chromosomes)
+
+# Plot using ggplot2
+plot_filtered = idx_stats_filtered %>%
+    ggplot(aes(x = seqnames, y = mapped, fill = seqnames)) +
+    geom_bar(stat = "identity") +
+    coord_flip()
+
+```
+
+![](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/chromo_filtered.png)
+
+## Post-alignment processing
+
+Across lots of function for the alignment, we decided readGAlignments is the best function in our case. In general, there is also the possibility of using the function readGAlignmentPairs(), which is used when there are two reads (not our case).
+Considering the sample SRR11256152:
+
+| Metric                | Description                                                                                                                                                               |
+|------------------------------------------|------------------------------|
+| Total Reads           | There are 44,497,728 total reads, all of which are primary (none are secondary or supplementary).                                                                         |
+| Mapped Reads          | Out of the total reads, 37,177,497 are mapped, which corresponds to an 83.55% mapping rate. This indicates that the majority of your reads align to the reference genome. |
+| Paired-End Reads      | The output indicates that there are 0 paired in sequencing, meaning there are no paired-end reads in your dataset.                                                        |
+| Properly Paired Reads | The count of 0 properly paired further confirms the absence of paired-end reads in the dataset.                                                                           |
+
+```{r, eval=FALSE, echo=FALSE}
+# Transforming bam_files paths to sortedBAM file names
+sortedBAM_files <- gsub("SRR", "Sorted_SRR", bam_files)
+
+# Initialize an empty list to store the readGAlignments results for each BAM file
+all_atac_reads <- list()
+
+# Use a chromosome name that exists in your BAM file
+which_region <- GRanges("chr1", IRanges(1, 195154279))  
+
+# Loop through each BAM file and read the alignments
+for (sorted_bam_file in sortedBAM_files) {
+    atac_reads <- readGAlignments(
+        sorted_bam_file,
+        param = ScanBamParam(
+            mapqFilter = 1, 
+            what = c("qname", "mapq", "flag", "isize"),
+            which = which_region
+        )
+    )
+    
+    # Add the reads from this BAM file to the list
+    all_atac_reads[[basename(sorted_bam_file)]] <- atac_reads
+}
+
+# Combine all the reads into a single GAlignments object
+combined_atac_reads <- do.call(c, all_atac_reads)
+
+# Uncomment the following line to check the length of combined_atac_reads
+# length(combined_atac_reads)
+```
+
+When considering this analysis, the paper suggested several genes expressed depending on the cell type.
+
+```{r, echo=FALSE}
+#| fig-cap: "Table displaying immune genes that are expressed in Chromosome 1 depending on organ and cell type"
+#| column: margin
+# Create a data frame
+
+# Define the data
+data <- data.frame(
+  Gene = c("Nppc", "Dner", "Ptpn7", "Mr1", "Cxcr4", "Hlx", "Fcer1g", "Actr3", "F11r", "Ncstn",
+           "Atf6", "Arpc2", "Psmd1", "Atf6", "Sumo1", "Casp8", "Nppc", "Bend6"),
+  Tissue = c("Heart", "Heart", "Kidney", "Liver", "Liver", "Liver", "Liver", "Liver", "Liver", "Liver",
+              "Spleen", "Spleen", "Spleen", "Spleen", "Spleen", "Spleen", "Spleen", "Spleen"),
+  CellType = c("Endothelium", "Epithelium", "Endothelium", "Epithelium", "Epithelium", "Epithelium",
+               "Fibroblasts", "Fibroblasts", "Fibroblasts", "Fibroblasts",
+               "Endothelium", "Epithelium", "Epithelium", "Epithelium", "Epithelium", "Epithelium",
+               "Fibroblasts", "Fibroblasts")
+)
+
+# Print the dataframe
+print(data)
+
+```
+
+After obtaining the GRanges file, we can focus our understanding on the Chromosome 1 that has the majority of mapped regions.
+In this case, it may be interesting to study the length of the reads through the function width(atacReads), where each number represents the length of a read, and all the first six reads have a length of 51 nucleotides. This means each of these reads is 51 bases long.
+
+```{r, echo=FALSE}
+#| fig-cap: "Distribution of frequency of Read Mapping Quality (MapQ) Scores taking the example of SRR11256152."
+#| fig-cap-align: center
+#| fig-subcap:
+#|   - "In @plot-1 there is the frequency of Read Mapping Quality (MapQ) Scores. It's possible to notice that the quality tends to be high, except in some cases where it's really low (identified as 1)."
+#| layout-ncol: 1
+#| column: page
+
+# Your readMapQ data
+readMapQ <- c(425409, 3104, 12421, 539, 724, 3335, 1281, 13099, 322, 976, 328, 799,
+              810, 309, 900, 565, 1664, 7490, 13628, 1181, 2493, 1801, 75346, 1398,
+              16536, 899, 3687, 22554, 8799, 34676, 18718, 64746, 6002, 1914307)
+mapq_scores <- c(1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 14, 15,
+                 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 30, 31,
+                 32, 33, 34, 35, 36, 37, 38, 39, 40, 42)
+
+# Convert the data into a data frame
+toPlot <- data.frame(MapQ = mapq_scores, Frequency = readMapQ)
+
+# Ensure MapQ is treated as a factor and ordered
+toPlot$MapQ <- factor(toPlot$MapQ, levels = unique(sort(as.numeric(toPlot$MapQ))))
+
+# Create a bar plot using ggplot
+ggplot(toPlot, aes(x = MapQ, y = Frequency, fill = MapQ)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "MapQ Score", y = "Frequency", title = "Frequency of Read Mapping Quality (MapQ) Scores") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  # Rotate x labels for better readability
+
+
+```
+
+```{r, echo=FALSE}
+setwd("C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT")
+combined_atac_reads <- readRDS("images/epi/combined_atac_reads.rds")
+```
+
+```{r, echo=FALSE}
+width_of_first_element <- width(combined_atac_reads[[1]])
+
+head(width_of_first_element)
+```
+
+```{r, echo=FALSE}
+insertSizes <- abs(elementMetadata(combined_atac_reads[[1]])$isize)
+head(insertSizes)
+```
+
+This result is expected, as our reads are single-end reads. If our reads were double-end reads, the result would have been different. Moreover, in this second case we should have used the function readLengths, instead of insertSizes, to see the length of our reads.
+
+```{r, echo=FALSE}
+#| column: margin
+summary(width_of_first_element) 
+```
+
+In the context of sequencing data, especially for single-end reads, the read length is typically consistent across all reads if the data comes from a sequencing run with a fixed read length setting. The provided output suggests that the sequencing data might have a uniform read length of 51 bases per read, which is common in many sequencing platforms where you specify a certain read length for the entire run. In any case, there are also some variation when considering the whole data.
+
+```{r, echo=FALSE}
+#| fig-cap-align: center
+#| fig-subcap:
+#|   - "Read Alignment"
+#|   - "Read Alignment with scale_y_continuous(trans = log2)"
+#| layout-ncol: 2
+#| column: page
+
+# Assuming atacReads is a GAlignments object with single-end reads
+#readLengths <- width_of_first_element
+
+# Create a table of read length frequencies and convert it to a data frame
+#readLenPlot <- table(readLengths) %>% 
+#              data.frame() %>% 
+#             rename(ReadLength = readLengths, Count = Freq) %>%
+#               mutate(ReadLength = as.numeric(as.vector(ReadLength)), 
+#                      Count = as.numeric(as.vector(Count))) %>% 
+#               ggplot(aes(x = ReadLength, y = Count)) + 
+#               geom_line() +
+#               theme_bw()
+
+# Save the plot without log transformation
+
+# Create the second plot with log transformation and additional features
+#readLenPlotWithLog <- readLenPlot +
+#                      scale_y_continuous(trans = "log2") +  # Log2 transformation of y-axis
+#                      geom_vline(xintercept = c(48, 54), colour = "red") +  # Red vertical lines
+#                      geom_vline(xintercept = c(46, 56), colour = "darkblue") +  # Dark blue vertical lines
+#                      geom_vline(xintercept = c(51), colour = "darkgreen")  # Dark green vertical line
+```
+
+![Read length plot for epithelial cells (example)](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/epi/readLenPlot.png)
+![Read length plot for epithelial cells (example)](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/epi/readLenPlotWithLog.png)
+
+With ATAC-seq, we are interested in knowing both ends of the DNA fragments generated by the assay, since the ends indicate where the transposase inserted.
+This can be done only with paired-end reads.
+A single-end read defines only one end of the fragment, and, although computational methods to infer fragment lengths from single-end reads exist, they tend to be inaccurate.
+With single-end reads, there is only one position to compare, and so any reads whose 5' ends match are considered duplicates.
+Thus, many false positives may result, and perfectly good reads are removed from further analysis
+
+```{r, echo=FALSE, eval=FALSE}
+# this is the case with multiple elements
+# Obtain the transcripts from the TxDb object
+txs <- transcripts(TxDb.Mmusculus.UCSC.mm10.knownGene)
+
+# Read alignments from all sorted BAM files
+gals <- lapply(sortedBAM_files, readGAlignments)
+
+```
+
+The gals is the form of a large list in this case.
+
+```{r, echo=FALSE}
+#| fig-cap-align: center
+#| fig-subcap:
+#|   - "The PT score, or Promoter-Transcript score, is a metric used in genomic studies, particularly in the analysis of chromatin immunoprecipitation sequencing (ChIP-seq) data. The concept behind the PT score is to compare the level of a certain genomic feature (like protein binding, histone modifications, or other epigenetic marks) at promoter regions versus the rest of the transcript (transcript body)."
+#|   - "The Nucleosome Free Regions (NFR) score is a metric used in genomics to identify and quantify regions in the genome that are devoid of nucleosomes. Nucleosomes are the basic units of DNA packaging in eukaryotic cells and consist of a segment of DNA wound around a core of histone proteins. Regions that are free of nucleosomes are often indicative of regulatory elements, such as promoters, enhancers, or other DNA-protein interaction sites, and are thus of great interest in the study of gene regulation and chromatin structure."
+#|   - "TSS enrichment score is a ratio between aggregate distribution of reads centered on TSSs and that flanking the corresponding TSSs. TSS score = the depth of TSS (each 100bp window within 1000 bp each side) / the depth of end flanks (100bp each end). TSSE score = max(mean(TSS score in each window)). TSS enrichment score is calculated according to the definition at https://www.encodeproject.org/data-standards/terms/#enrichment. Transcription start site (TSS) enrichment values are dependent on the reference files used."
+#| layout-ncol: 3
+#| column: page
+# Ensure PTscore function is defined or loaded from the correct library
+# Calculate the promoter-transcript score for the first alignment
+# (Adjust accordingly if you need to handle multiple alignments)
+#pt <- PTscore(gals[[1]], txs) #being gals a large list, we cna go from gals to gals[[1]] to analyse the PT score
+
+# Plotting the results and saving to a PDF
+#plot(pt$log2meanCoverage, pt$PT_score,
+#     xlab="log2 mean coverage",
+#     ylab="Promoter vs Transcript")
+
+#nfr <- NFRscore(gals[[1]], txs)
+#plot(nfr$log2meanCoverage, nfr$NFR_score,
+#      xlab="log2 mean coverage",
+#      main="NFRscore for 200bp flanking TSSs",
+#      ylab="Nucleosome Free Regions score",
+#      xlim=c(-10, 0), ylim=c(-5, 5))
+#tsse <- TSSEscore(gals[[1]], txs)
+#plot(100*(-9:10-.5), tsse$values, type="b",
+#     xlab="distance to TSS",
+#     ylab="aggregate TSS score")
+```
+
+![Promoter transcript plot for epithelial cells](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/epi/promoter_transcript_plot.png)
+
+The PT score, or Promoter-Transcript score, is a metric used in genomic studies, particularly in the analysis of chromatin immunoprecipitation sequencing (ChIP-seq) data. The concept behind the PT score is to compare the level of a certain genomic feature (like protein binding, histone modifications, or other epigenetic marks) at promoter regions versus the rest of the transcript (transcript body).
+
+![NFR score plot for epithelial cells](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/epi/NFRscore_plot.png)
+
+The Nucleosome Free Regions (NFR) score is a metric used in genomics to identify and quantify regions in the genome that are devoid of nucleosomes. Nucleosomes are the basic units of DNA packaging in eukaryotic cells and consist of a segment of DNA wound around a core of histone proteins. Regions that are free of nucleosomes are often indicative of regulatory elements, such as promoters, enhancers, or other DNA-protein interaction sites, and are thus of great interest in the study of gene regulation and chromatin structure.
+
+![TSSE score plot for epithelial cells](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/epi/TSSEscore_plot.png)
+
+TSS enrichment score is a ratio between aggregate distribution of reads centered on TSSs and that flanking the corresponding TSSs. TSS score = the depth of TSS (each 100bp window within 1000 bp each side) / the depth of end flanks (100bp each end). TSSE score = max(mean(TSS score in each window)). TSS enrichment score is calculated according to the definition at https://www.encodeproject.org/data-standards/terms/#enrichment. Transcription start site (TSS) enrichment values are dependent on the reference files used.
+
+```{r, message=FALSE, echo=FALSE}
+tssLocations <- resize(genes(TxDb.Mmusculus.UCSC.mm10.knownGene), fix = "start", width = 1)
+```
+
+```{r, echo=FALSE, eval=FALSE}
+# Loop through each GAlignments object
+readLengths_list <- lapply(gals, function(gal) width(gal))
+```
+
+```{r, echo=FALSE, eval=FALSE}
+# When considering multiple cases
+# Initialize lists to store categorized reads
+atacReads_Open_list <- list()
+atacReads_MonoNuc_list <- list()
+atacReads_diNuc_list <- list()
+
+# Loop through each GAlignments object
+for(i in seq_along(gals)) {
+  # Calculate read lengths for this set of alignments
+  readLengths <- width(gals[[i]])
+  
+  # Subset the GAlignments object directly and store in lists
+  atacReads_Open_list[[i]] <- gals[[i]][readLengths < 100, ]
+  atacReads_MonoNuc_list[[i]] <- gals[[i]][readLengths > 180 & readLengths < 240, ]
+  atacReads_diNuc_list[[i]] <- gals[[i]][readLengths > 315 & readLengths < 437, ]
+}
+```
+
+## QC for low quality, duplicates and signal distribution
+
+In this case, we can consider the low quality control, duplicates and signal distributions in several situations.
+We can take one example into account:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, eval=FALSE}
+# Set the number of files to process in each iteration
+batch_size <- 3  # Adjust this value based on your available RAM
+
+# Loop through each set of BAM files in batches
+for (batch_start in seq(1, length(bam_files), by = batch_size)) {
+  # Get the subset of BAM files for the current batch
+  batch_indices <- seq(batch_start, min(batch_start + batch_size - 1, length(bam_files)))
+  batch_bam_files <- bam_files[batch_indices]
+  
+  # Initialize an empty GRanges object to store the results for the current batch
+  combined_MacsCalls_batch <- GRanges()
+  
+  # Loop through each BAM file in the current batch and perform QC
+  for (i in seq_along(batch_bam_files)) {
+    blkList <- import.bed(blkList_files[i])
+    openRegionPeaks <- peak_files[i]
+    sortedBAM <- sortedBAM_files[i]
+    
+    qcRes <- ChIPQCsample(sortedBAM,
+                           peaks = openRegionPeaks,
+                           annotation = "mm10",
+                           chromosomes = "chr1",
+                           blacklist = blkList,
+                           verboseT = FALSE)
+    
+    # Extract MacsCalls_chr1 and append to the combined result for the current batch
+    MacsCalls_chr1 <- granges(qcRes[seqnames(qcRes) %in% "chr1"])
+    combined_MacsCalls_batch <- c(combined_MacsCalls_batch, MacsCalls_chr1)
+    
+    # Add QC results to the list
+    qc_results_list[[basename(sortedBAM)]] <- QCmetrics(qcRes) %>% t %>% data.frame %>% dplyr::select(Reads, starts_with(c("Filt")), starts_with(c("RiP")), starts_with(c("RiBL")))
+  }
+  
+  # Annotate and process the combined result for the current batch
+  MacsCalls_chr1Anno_batch <- annotatePeak(combined_MacsCalls_batch, TxDb = TxDb.Mmusculus.UCSC.mm39.refGene)
+  
+}
+```
+
+```{r, echo=FALSE}
+combined_qc_results <- readRDS("C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/epi/qc_results_table.rds")
+```
+
+```{r, echo=FALSE}
+combined_qc_results
+```
+
+| Metric | Description                                                                                                                                                 |
+|--------------------------|----------------------------------------------|
+| Reads  | The total number of reads sequenced or processed.                                                                                                           |
+| Filt.  | Short for "Filtered." Represents the number or percentage of reads filtered out due to poor quality or other criteria.                                      |
+| RiP.   | Possibly "Reads in Peaks." Denotes the percentage of reads that fall into the identified peaks, indicative of regions of interest.                          |
+| RiBL.  | Likely "Reads in BlackList Regions." Indicates the percentage of reads mapping to blacklist regions, known to produce unreliable or artifact-prone signals. |
+
+```{r, echo=FALSE, message=FALSE}
+# Assuming "Reads" is the total number of reads
+combined_qc_results %>%
+  mutate(Dup_Percent = (Filt. / Reads) * 100) %>%
+  dplyr::select(Reads, Dup_Percent) %>%
+  datatable(rownames = NULL)
+
+```
+
+In this case, there is just an example of some of elements of the data.
+
+| Metric      | Description                                                                                                                              |
+|------------------------------------|------------------------------------|
+| Mapped      | The total number of reads that were successfully aligned to the reference genome.                                                        |
+| Dup_Percent | The percentage of reads that are duplicates of other reads, which can be indicative of amplification bias or other issues in sequencing. |
+
+```{r, echo=FALSE}
+setwd("C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT")
+MacsCalls_chr1Anno = readRDS("images/epi/MacsCalls_chr1Anno.rds")
+```
+
+| Genomic Feature         | Description                                                                                                                                                                                                                                                                         |
+|---------------------------------------------|---------------------------|
+| **Promoter (\<=1kb)**   | Regions within 1 kilobase (kb) upstream of the transcription start site (TSS) of a gene. Promoters are crucial for gene regulation, serving as the binding site for RNA polymerase and other transcription factors.                                                                 |
+| **Promoter (1-2kb)**    | Regions located 1 to 2 kb upstream of the TSS.                                                                                                                                                                                                                                      |
+| **Promoter (2-3kb)**    | Regions located 2 to 3 kb upstream of the TSS. Promoter regions are typically involved in the initiation of transcription and can vary in distance from the actual TSS. Different ranges are specified to understand the distribution of peaks concerning the proximity to the TSS. |
+| **5' UTR**              | The untranslated region (UTR) immediately upstream of the coding sequence of a gene on the 5' end. It's involved in the regulation of translation and can affect the stability, localization, and efficiency of mRNA translation.                                                   |
+| **3' UTR**              | The untranslated region immediately downstream of the coding sequence of a gene on the 3' end. Similar to the 5' UTR, it plays roles in post-transcriptional regulation, affecting mRNA stability and regulation of translation.                                                    |
+| **1st Exon**            | The first exon of a gene, which includes both the translated and untranslated regions. It is significant as it often contains both regulatory elements and the beginning of the coding sequence.                                                                                    |
+| **Other Exon**          | Refers to all exons in a gene except for the first. Exons are the parts of the gene sequence that are expressed into mRNA and then translated into protein.                                                                                                                         |
+| **1st Intron**          | The first intron of a gene, which is the non-coding sequence immediately following the first exon. Introns are spliced out during mRNA processing but can contain important regulatory elements and splice sites.                                                                   |
+| **Other Intron**        | Refers to all introns in a gene except for the first. Introns can vary greatly in size and can be involved in gene regulation.                                                                                                                                                      |
+| **Downstream (\<=3kb)** | Regions located within 3 kb downstream of the transcription end site (TES) of a gene. These areas can contain regulatory elements that influence gene transcription termination, mRNA stability, or other post-transcriptional controls.                                            |
+| **Distal Intergenic**   | Regions that are far from known genes, typically not falling within any of the specified promoter, intronic, or exonic regions. These areas might be involved in long-range regulation or may contain as-yet-uncharacterized genes or regulatory elements.                          |
+
+```{r, echo=FALSE}
+#| fig-cap-align: center
+#| layout-ncol: 3
+#| column: page
+
+plotAnnoPie(MacsCalls_chr1Anno)
+
+plotAnnoBar(MacsCalls_chr1Anno)
+
+upsetplot(MacsCalls_chr1Anno)
+```
+
+When analysing the three cell types, we performed several analysis, among them, we wanted to understand the annotation of the  genomic data for chromosome 1 (chr1) generated by the MACS (Model-based Analysis of ChIP-Seq) tool. In this case, we noticed that the cells had really similar concentration of Promoter, UTR, Introns and all the other components. For this reason, we are displaying a plot to show the distribution in the three cases.  This case in particular describes the epithelial cells, but it can be generalised to all the other cell types.
+
+```{r, echo=FALSE}
+MacsGranges_Anno <- as.GRanges(MacsCalls_chr1Anno)
+TSS_MacsGranges_Anno <- MacsGranges_Anno[abs(MacsGranges_Anno$distanceToTSS) < 
+    500]
+TSS_MacsGranges_Anno
+```
+
+After performing the analysis, there was the possibility of reviewing some genetic expression and how they would related to the use of Integrative Genome Viewer (IGV).The Integrative Genomics Viewer (IGV) is a high-performance genome browser used for visualizing and exploring large-scale genomic datasets. It provides researchers and scientists with a powerful tool to interactively view and analyze diverse genomic data. Obtaining our BigWig and bed files, there was the possibility of analysing them using IGV or the UCSC Genome Browser. The UCSC Genome Browser is a web-based tool that allows researchers to visualize and explore genomic data. It provides a user-friendly interface for viewing annotated genome sequences and various genomic annotations, making it a valuable resource for researchers in genomics, genetics, and related fields. In this case, it's possible to note that there are .bed files that have been useful to identify the location of the peaks, while BigWig files is particularly useful to identify the signal intensities from high-throughput sequencing experiments.
+For example, when considering the relationship between BigWig and bed files, it's possible to notice that .bed files would show the presence of peaks, but for the quantificiation BigWig files can be helpful:
+
+![](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/Igv_BigWig.png)
+
+In any case, .bed files can be helpful when alaysing how many peaks can be present in a particular cell type. For example, when analysing endothelial cells, Mixi file wasn't highly expressed, and the quantity of peaks in bed files was really close to 0. At the same time, when considering F11r, Actr3, Fcer1g as examples, they were immune genes expressed in the case of fibroblasts, but some of them also had an expression in other cells, such as in endothelial cells.
+
+![](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/igv_snapshot_f11_endo)
+
+![](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/igv_snapshot_endo_mixi)
+
+![](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/igv_snapshot_endo_actr3)
+
+![](C:/Users/gianf/OneDrive/Documenti/DOCUMENTS_ETH/1 YEAR/1 SEMESTER/SAHTGTD/PROJECT/images/igv_snapshot_endo_fcer1g)
+
+# Conclusions
+
+The conclusion can be divided looking either at The RNA-seq analysis, or at the ATAC-seq analysis.
+Our analysis mostly focused on the evaluation of unrealized Potential in Promoter Accessibility and the Similarity Across Structural Cells within the Same Organ.
+
+## RNA-seq conclusions
+
+In the case of RNA-seq, after performing our analysis we analysed the DE in each organ noticing that genes expression shows huge variability across different organs, which indicates there are highly specific patterns of expression, defining that cells tend to be similar organs compared to cell types. In this case, we used different tools to avoid a bias related to the analysis used. For this reason, we noticed that the statement on the similarity across structural cells within the same organ was correct.
+
+## ATAC-seq conclusions
+
+In the case of ATAC-seq, we wanted to verify that the conclusion present in the case of RNA-seq was also correct. After the analysis of some genes such as F11r, Actr3, Fcer1g, there was an understanding that the cell type may not be highly influential compared to the organ in which the cells are. Indeed, some genes that could be influential in the case of fibroblasts, are also present in endothelial cells. Moreover, the higher level of similarity between organs can also be noticed with the similarities in the case of the genomic data for chromosome 1 (chr1) and the PT score, Nucleosome Free Regions (NFR) score, and TSS enrichment score, whose results were quite similar among cell types. When looking at unrealised potentials, it was also possible to notice the presence of some of those immune genes whose chromatin was not open in the case of steady state scenario. For this reason, also the first hypothesis was correct.
+
+# Resources
+
+In order to achieve the goal of our project, we made use of various heterogeneous resources:
+
+1. The paper "Structural cells are key regulators of organ-specific immune responses" by Krausgruber et al.;
+2. SRA Run Selector to obtain the RNA-seq and the ATAC-seq data;
+3. Euler VIII, which stands for Erweiterbarer, Umweltfreundlicher, Leistungsfähiger ETH-Rechner (https://scicomp.ethz.ch/wiki/Euler);
+4. Ensembl.org to retrieve additional metadata for our analysis;
+5. RStudio to conduct our experimental analyses;
+6. Integrative Genome Viewer (IGV) for the visualisation of bed files and bwg files;
+7. Google Drive to store 70 GB of data for our analysis, they are possible to be found [here](https://drive.google.com/drive/folders/1u-L0MUTih4VVkhrFoqlZsw-ttSn-mBy8?usp=sharing);
+8. Online tutorials were followed for RNA-seq and [ATAC-seq](https://rockefelleruniversity.github.io/RU_ATAC_Workshop.html).
